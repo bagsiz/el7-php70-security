@@ -1,0 +1,115 @@
+# el7-php70-security
+
+Patched PHP 7.0 RPMs for **CentOS 7** (Remi packages) fixing
+**CVE-2026-109618** and **CVE-2026-109619** (GHSA-w8hw-w9fx-j79w, GHSA-6wmf-4rv5-p3rp).
+The repo also includes an installer that finds the PHP installs on a server, upgrades
+them and can roll the upgrade back.
+
+> ⚠️ PHP 7.0 has been end-of-life since 2019 and upstream did not publish a fix for this
+> branch. The CVE fix here is a **backport of the official PHP 7.4 patch**
+> (`PHP-7.4-CVE-2026-109618-109619` in php-src) to 7.0. It is not an official patch.
+> Test it on a non-production server first.
+
+## Quick start
+
+```bash
+curl -fLO https://raw.githubusercontent.com/bagsiz/el7-php70-security/main/php70-cve.sh
+chmod +x php70-cve.sh
+
+./php70-cve.sh status      # list every PHP on the server and its patch status
+./php70-cve.sh install     # upgrade installed PHP 7.0 packages (asks for confirmation; -y to skip)
+./php70-cve.sh uninstall   # roll back to the previous versions
+```
+
+The RPMs are published as [release assets](https://github.com/bagsiz/el7-php70-security/releases/tag/v7.0.33-47.1).
+`install` downloads the archive it needs and checks it against a SHA256 that is hardcoded
+in the script. If the server has no internet access, download the archive by hand and put
+it next to the script.
+
+## What it detects
+
+`status` and `install` start by listing every PHP they can find on the server:
+
+- the `php`, `php70`, `php7.0`, `php-fpm` and `php-cgi` commands (symlinks are resolved)
+- copies under `/usr/local` and `/opt`, and under `/opt/remi/php*`
+- running `php-fpm` master processes
+- PHP modules loaded by Apache (mod_php)
+
+For each binary it looks up the RPM that owns it:
+
+| Found | Action |
+|---|---|
+| `php`, `php-cli`, `php-fpm`, … **7.0.x** from Remi `remi-php70` (`/usr/bin/php`, `php-fpm` service, mod_php) | upgraded with `php70-rpms-base` |
+| `php70-php-*` from Remi SCL (`/opt/remi/php70`, `php70-php-fpm` service) | upgraded with `php70-rpms-scl` |
+| Both on one server | both are upgraded |
+| Webtatic `php70w`, IUS `php70u`, Debian/Ubuntu `php7.0`, source builds, PHP other than 7.0 | reported only, not changed |
+
+The script only replaces PHP packages that are already installed. It does not touch
+packages that are not in the release, such as PECL extensions (`php-pecl-*`), `php-pear`
+or `php70-runtime`. PECL extensions keep working because the PHP API/ABI is unchanged.
+
+## What `install` does
+
+1. Runs pre-flight checks: root, CentOS 7, x86_64, and `php-fpm -t` must already pass.
+2. Downloads the RPM archive and verifies it against the pinned SHA256, then verifies
+   each RPM against `SHA256SUMS`.
+3. Saves a backup under `/var/lib/php70-cve-2026/<base|scl>/backup-<timestamp>/`:
+   - the RPMs of the currently installed versions, when the repository still has them
+   - the PHP configuration (`/etc/php.ini`, `/etc/php.d`, `/etc/php-fpm.d`, `/etc/opt/remi/php70`, …)
+   - the list of services that were running
+4. Upgrades the packages with `yum localinstall`.
+5. Checks the result:
+   - `php -v`
+   - `php -m` must load without warnings
+   - the changelog must contain the CVE
+   - `php-fpm -t` and `apachectl -t` must pass
+6. Restarts the services that were running (`php-fpm` / `php70-php-fpm`, `httpd`).
+7. **Rolls back automatically** if any of these steps fails.
+
+`uninstall` puts the backed-up RPMs back. If an old version could not be backed up
+because the repository no longer has it, those packages go to the newest version left in
+the repository instead (Remi `7.0.33-42`, unpatched). The script warns about this before
+installing. Configuration files are not restored automatically; the backup path is printed.
+
+## Package contents (`7.0.33-47.1.el7`)
+
+- **base** (`php70-rpms-base.tar.gz`, `php-*`): built from Remi's `php-7.0.33-42` SRPM,
+  which is what `remi-php70` servers run. On top of it are the security fixes Remi later
+  added only to the SCL branch:
+  - CVE-2024-8925, CVE-2024-8926, CVE-2024-8927, CVE-2024-8932
+  - CVE-2024-11233, CVE-2024-11234, CVE-2024-11236
+  - GHSA-4w77-75f9-2c8w
+  - CVE-2026-6722, CVE-2026-6735, CVE-2026-7261, CVE-2026-7262, CVE-2026-7568
+  - GH-22187
+
+  The CVE-2026-109618/109619 backport is applied last. File lists, config files,
+  scriptlets, provides and requires are identical to Remi's `7.0.33-42` packages; only the
+  version strings differ. This includes the ZTS build and `libphp7-zts.so`.
+- **scl** (`php70-rpms-scl.tar.gz`, `php70-php-*`): Remi's `php70-php-7.0.33-47` SRPM plus
+  the CVE-2026-109618/109619 backport.
+
+## Behaviour changes
+
+These come from the upstream fix:
+
+- A request that exceeds `memory_limit` (or hits another out-of-memory condition)
+  terminates the worker process with `exit(1)` instead of unwinding. PHP-FPM starts a new
+  worker. Shutdown functions and destructors do not run for that request.
+- The out-of-memory fatal error goes to stderr, not to `error_log`. To see it in the
+  PHP-FPM log, set `catch_workers_output = yes` in the pool configuration.
+- `session.upload_progress` is disabled.
+
+## Testing
+
+Everything was tested in clean CentOS 7 containers against Remi's `7.0.33-42` packages:
+
+- **Installer, 26 checks each for base and SCL:** install, re-install (no-op), uninstall,
+  rollback when backup RPMs are missing, automatic rollback when verification fails, a
+  tampered RPM or archive being refused, no PHP on the host, base and SCL on the same
+  host, and an SCL install without the CLI package.
+- **php-src test suite**, about 3,500 tests: Zend, basic, lang, session and string tests.
+  The only differences from the unpatched packages are the expected ones: the
+  `session.upload_progress` (`rfc1867*`) tests fail, and one out-of-memory message has
+  cosmetic formatting changes. Upstream's own 7.4 patch shows the same differences.
+- **Not covered:** real systemd and Apache. The containers used a stub `systemctl`. Run
+  `status` and `install` on one server and check the output before rolling out further.

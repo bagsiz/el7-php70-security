@@ -251,9 +251,14 @@ preflight() {
 verify() {
     local ok=0 out
     say "Doğrulama ($TITLE)"
-    if out=$("$PHP" -v 2>&1); then echo "  php -v: $(echo "$out" | head -1)"; else echo "  php -v BAŞARISIZ: $out"; ok=1; fi
-    out=$("$PHP" -m 2>&1 | grep -iE 'warning|error|fatal|unable to')
-    if [ -n "$out" ]; then echo "  php -m uyarı/hata verdi:"; echo "$out" | sed 's/^/    /'; ok=1; else echo "  modüller: uyarısız yüklendi"; fi
+    # cli paketi kurulu olmayabilir (ör. yalnızca php70-php-common kalıntısı)
+    if [ -x "$PHP" ]; then
+        if out=$("$PHP" -v 2>&1); then echo "  php -v: $(echo "$out" | head -1)"; else echo "  php -v BAŞARISIZ: $out"; ok=1; fi
+        out=$("$PHP" -m 2>&1 | grep -iE 'warning|error|fatal|unable to')
+        if [ -n "$out" ]; then echo "  php -m uyarı/hata verdi:"; echo "$out" | sed 's/^/    /'; ok=1; else echo "  modüller: uyarısız yüklendi"; fi
+    else
+        echo "  php -v / php -m: atlandı ($PHP yok, cli paketi kurulu değil)"
+    fi
     if rpm -q --changelog "$COMMON" | grep -q "$CVE"; then echo "  changelog: $CVE var"; else echo "  changelog: $CVE YOK"; ok=1; fi
     if [ -x "$FPM" ]; then
         if out=$("$FPM" -t 2>&1); then echo "  php-fpm -t: tamam"; else echo "  php-fpm -t BAŞARISIZ:"; echo "$out" | sed 's/^/    /'; ok=1; fi
