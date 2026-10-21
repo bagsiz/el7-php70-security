@@ -44,6 +44,25 @@ For each binary it looks up the RPM that owns it:
 | Both on one server | both are upgraded |
 | Webtatic `php70w`, IUS `php70u`, Debian/Ubuntu `php7.0`, source builds, PHP other than 7.0 | reported only, not changed |
 
+Example `status` output from a server with base PHP 7.0, mod_php and PECL extensions:
+
+```
+==> PHP on this server
+  [patchable: base] /usr/bin/php  [PHP 7.0.33]  (command 'php')
+  [patchable: base] /usr/sbin/php-fpm  [PHP 7.0.33]  (command 'php-fpm'; RUNNING: php-fpm master pid 192)
+  [patchable: base] /usr/lib64/httpd/modules/libphp7.so  [PHP 7.0.33]  (Apache module (/etc/httpd/conf.modules.d/15-php.conf))
+  [left as is     ] /usr/local/bin/php  [PHP 7.0.33]  (command 'php') : not owned by any package: built from source / copied by hand (not supported)
+==> Installed packages: php (base, remi-php70)
+  php                              7.0.33-21.el7.remi       UNPATCHED (patched build available)
+  php-cli                          7.0.33-21.el7.remi       UNPATCHED (patched build available)
+  php-common                       7.0.33-21.el7.remi       UNPATCHED (patched build available)
+  php-pecl-redis5                  5.3.4-1.el7.remi.7.0     left as is (not shipped here)
+  ...
+==> Services
+  php-fpm          active
+  httpd            active
+```
+
 The script only replaces PHP packages that are already installed. It does not touch
 packages that are not in the release, such as PECL extensions (`php-pecl-*`), `php-pear`
 or `php70-runtime`. PECL extensions keep working because the PHP API/ABI is unchanged.
@@ -54,7 +73,7 @@ or `php70-runtime`. PECL extensions keep working because the PHP API/ABI is unch
 2. Downloads the RPM archive and verifies it against the pinned SHA256, then verifies
    each RPM against `SHA256SUMS`.
 3. Saves a backup under `/var/lib/php70-cve-2026/<base|scl>/backup-<timestamp>/`:
-   - the RPMs of the currently installed versions, when the repository still has them
+   - the RPMs of the currently installed versions (see [Rollback backups](#rollback-backups))
    - the PHP configuration (`/etc/php.ini`, `/etc/php.d`, `/etc/php-fpm.d`, `/etc/opt/remi/php70`, …)
    - the list of services that were running
 4. Upgrades the packages with `yum localinstall`.
@@ -66,10 +85,37 @@ or `php70-runtime`. PECL extensions keep working because the PHP API/ABI is unch
 6. Restarts the services that were running (`php-fpm` / `php70-php-fpm`, `httpd`).
 7. **Rolls back automatically** if any of these steps fails.
 
-`uninstall` puts the backed-up RPMs back. If an old version could not be backed up
-because the repository no longer has it, those packages go to the newest version left in
-the repository instead (Remi `7.0.33-42`, unpatched). The script warns about this before
-installing. Configuration files are not restored automatically; the backup path is printed.
+`uninstall` puts the backed-up RPMs back with `rpm -Uvh --oldpackage`, so the server
+returns to exactly the versions it had. Configuration files are not restored
+automatically; the backup path is printed.
+
+### Rollback backups
+
+yum does not keep the `.rpm` files of installed packages by default (`keepcache=0`), and
+Remi's EL7 repositories only still carry the newest builds (`7.0.33-41` and `-42`). A
+server running an older build, such as `7.0.33-21` or `7.0.23-1`, usually has that RPM
+nowhere. Before upgrading, the script therefore looks for the RPM of each installed
+version in this order:
+
+| # | Source | Notes |
+|---|---|---|
+| 1 | **yum cache** (`/var/cache/yum`) | Present when `keepcache=1` or the package was downloaded earlier. The file must match the exact name-version-release and pass `rpm -K` |
+| 2 | **repositories** (`yumdownloader`) | The exact version, if the repository still has it |
+| 3 | **`rpmrebuild`** | Rebuilds the RPM from the RPM database and the installed files. It is installed from EPEL if needed. The result is **unsigned** and not byte-identical to the original, and config files go in as they are on disk now |
+| – | none of the above | The script warns and asks before continuing. `uninstall` then moves those packages to the newest version left in the repositories (Remi `7.0.33-42`, unpatched) |
+
+The source used for each package is printed during `install` and `uninstall`, and is
+recorded in `sources.txt` inside the backup directory:
+
+```
+==> Creating backup: /var/lib/php70-cve-2026/base/backup-20261022-101500
+  configuration: /var/lib/php70-cve-2026/base/backup-20261022-101500/config.tar.gz
+  php-cli-7.0.33-21.el7.remi.x86_64                rebuild
+  php-common-7.0.33-21.el7.remi.x86_64             rebuild
+  ...
+  RPMs of the current versions: 10/10 backed up
+WARNING: some RPMs were rebuilt from the installed files with rpmrebuild (unsigned, not identical to the original)
+```
 
 ## Package contents (`7.0.33-47.1.el7`)
 
@@ -99,6 +145,21 @@ These come from the upstream fix:
   PHP-FPM log, set `catch_workers_output = yes` in the pool configuration.
 - `session.upload_progress` is disabled.
 
+## FAQ
+
+**Packages marked "left as is" (`php-pecl-*`, …): are they vulnerable, do they need updating?**
+Not for these CVEs. CVE-2026-109618/109619 are in the PHP core: the Zend engine, request
+startup and shutdown, multipart parsing and the session extension. Those are fixed by
+upgrading `php-common`, `php-cli`, `php-fpm` and the other core packages. PECL extensions
+are separate code that runs inside the patched core, so they don't need to change. They
+can still have issues of their own. For example, `php-pecl-xdebug` should not be installed
+on production servers.
+
+**The script reports a PHP as "left as is" (not supported). What now?**
+That PHP was not installed from Remi's packages: it may be a source build, Webtatic, IUS,
+a Debian/Ubuntu package, or a version other than 7.0. It has to be patched or upgraded
+some other way.
+
 ## Testing
 
 Everything was tested in clean CentOS 7 containers against Remi's `7.0.33-42` packages:
@@ -107,6 +168,9 @@ Everything was tested in clean CentOS 7 containers against Remi's `7.0.33-42` pa
   rollback when backup RPMs are missing, automatic rollback when verification fails, a
   tampered RPM or archive being refused, no PHP on the host, base and SCL on the same
   host, and an SCL install without the CLI package.
+- **Rollback backups:** each source was tested on its own (yum cache only, `rpmrebuild`
+  only, repositories) and returned the server to the exact previous version. After a
+  rollback from `rpmrebuild` packages, `rpm -V` reports no changes.
 - **php-src test suite**, about 3,500 tests: Zend, basic, lang, session and string tests.
   The only differences from the unpatched packages are the expected ones: the
   `session.upload_progress` (`rfc1867*`) tests fail, and one out-of-memory message has
