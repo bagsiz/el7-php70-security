@@ -12,6 +12,11 @@
 # Yalnızca sunucuda zaten kurulu olan PHP paketleri değiştirilir. Bu pakette bulunmayanlar
 # (pecl eklentileri, php-pear, php70-runtime ...) olduğu gibi kalır.
 # install sonrası doğrulama başarısız olursa otomatik olarak geri alınır.
+#
+# KENDİ SORUMLULUĞUNUZDA KULLANIN. Resmi olmayan paketler ve resmi olmayan bir 7.0 yamasıdır;
+# "OLDUĞU GİBİ", hiçbir garanti olmadan sunulur. Yazarlar hiçbir zarardan sorumlu değildir.
+# USE AT YOUR OWN RISK - provided "AS IS", WITHOUT WARRANTY. See README.md and LICENSE.
+# https://github.com/bagsiz/el7-php70-security
 set -uo pipefail
 
 PATCHED_VR=7.0.33-47.1.el7

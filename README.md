@@ -113,3 +113,55 @@ Everything was tested in clean CentOS 7 containers against Remi's `7.0.33-42` pa
   cosmetic formatting changes. Upstream's own 7.4 patch shows the same differences.
 - **Not covered:** real systemd and Apache. The containers used a stub `systemctl`. Run
   `status` and `install` on one server and check the output before rolling out further.
+
+## Disclaimer
+
+**USE AT YOUR OWN RISK.** This project, including the installer script, the patches and
+the RPM packages, is provided **"AS IS", WITHOUT WARRANTY OF ANY KIND**, express or implied.
+This includes, without limitation, warranties of merchantability, fitness for a particular
+purpose, security and non-infringement.
+
+- **Not official.** The packages are unofficial rebuilds. The CVE-2026-109618/109619 fix
+  for PHP 7.0 is an unofficial backport that has not been reviewed or approved by the PHP
+  project. It may be incomplete, may not fully fix the vulnerabilities, and may introduce
+  bugs or other security issues.
+- **Your responsibility.** You decide whether to use this software, and you are
+  responsible for testing it, for backing up your systems and data, and for any change you
+  make to your servers. Running unsupported software (CentOS 7, PHP 7.0) carries risk that
+  no patch removes. The recommended long-term fix is to move to a supported operating
+  system and PHP version.
+- **No liability.** In no event shall the authors or contributors be liable for any claim,
+  damages or other liability arising from, out of, or in connection with this software or
+  its use. This covers direct, indirect, incidental, special, consequential or punitive
+  damages, data loss, downtime and security incidents, whether in contract, tort or
+  otherwise, even if advised of the possibility of such damage.
+- **No support obligation.** There is no commitment to support, maintenance, updates or
+  security fixes.
+- **Not security advice.** Nothing in this repository is professional, security or legal
+  advice.
+- **No affiliation.** This project is not affiliated with, endorsed by or sponsored by:
+  - The PHP Group or the PHP project
+  - Remi Collet / remirepo
+  - Red Hat, Inc. or the CentOS Project
+  - GitHub, Inc.
+
+  "PHP", "CentOS", "Red Hat" and other names are trademarks of their respective owners
+  and are used here only to describe compatibility.
+
+## License
+
+- **Installer script and documentation** (`php70-cve.sh`, `README.md`): MIT License, see
+  [`LICENSE`](LICENSE).
+- **RPM packages (release assets):** these contain third-party software that stays under
+  its original license:
+  - PHP is under the [PHP License v3.01](https://www.php.net/license/3_01.txt). The PHP
+    patches, including the CVE backport, are derived from php-src and fall under the same
+    license.
+  - Zend Engine is under the Zend Engine License v2.00.
+  - Bundled libraries and extensions are under their own licenses.
+  - The RPM spec files and packaging come from Remi's repository under the MIT License.
+
+  License texts are included in the packages: `/usr/share/licenses/php-common-7.0.33/`
+  for base, `/opt/remi/php70/root/usr/share/licenses/php70-php-common-7.0.33/` for SCL.
+
+This product includes PHP software, freely available from <http://www.php.net/software/>.
