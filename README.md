@@ -26,6 +26,24 @@ The RPMs are published as [release assets](https://github.com/bagsiz/el7-php70-s
 in the script. If the server has no internet access, download the archive by hand and put
 it next to the script.
 
+### Network timeouts
+
+Network waits are capped at **10 seconds** so the script does not hang on unreachable
+hosts. This matters on CentOS 7 servers, which are EOL and often still list dead mirrors
+such as `mirrorlist.centos.org`.
+
+| Step | Behaviour |
+|---|---|
+| Release download (`curl`) | Gives up if no connection is made within 10s, or if the download stalls (below 1 KB/s) for 10s. No retry. A slow download that is still moving is not cut off |
+| `yum` / `yumdownloader` (backup, `rpmrebuild` install, install, rollback) | 10s per request, one retry (in yum, `0` would mean "retry forever"), and unreachable repositories are skipped (`skip_if_unavailable`) |
+
+Environment variables:
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `PHP70CVE_NET_TIMEOUT` | `10` | Network timeout in seconds, e.g. `PHP70CVE_NET_TIMEOUT=30 ./php70-cve.sh install` on a slow link |
+| `PHP70CVE_RELEASE_URL` | this repo's `v7.0.33-47.1` release | Download the archives from a mirror or an internal server instead |
+
 ## What it detects
 
 `status` and `install` start by listing every PHP they can find on the server:
