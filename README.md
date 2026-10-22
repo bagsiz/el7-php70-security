@@ -119,8 +119,32 @@ version in this order:
 |---|---|---|
 | 1 | **yum cache** (`/var/cache/yum`) | Present when `keepcache=1` or the package was downloaded earlier. The file must match the exact name-version-release and pass `rpm -K` |
 | 2 | **repositories** (`yumdownloader`) | The exact version, if the repository still has it |
-| 3 | **`rpmrebuild`** | Rebuilds the RPM from the RPM database and the installed files. It is installed from EPEL if needed. The result is **unsigned** and not byte-identical to the original, and config files go in as they are on disk now |
+| 3 | **`rpmrebuild`** | Rebuilds the RPM from the RPM database and the installed files. The result is **unsigned** and not byte-identical to the original, and config files go in as they are on disk now. Files missing on disk (docs not installed, files deleted by hand) are left out. See [rpmrebuild on servers without repositories](#rpmrebuild-on-servers-without-repositories) |
 | – | none of the above | The script warns and asks before continuing. `uninstall` then moves those packages to the newest version left in the repositories (Remi `7.0.33-42`, unpatched) |
+
+#### rpmrebuild on servers without repositories
+
+Old servers often cannot reach EPEL or the CentOS repositories, so `rpmrebuild` and
+`rpm-build` cannot be installed from there. The release therefore also ships
+`el7-rpmrebuild-tools.tar.gz`:
+
+- `rpmrebuild-2.11-3.el7` from EPEL 7
+- `rpm-build` for every `rpm` version CentOS 7 shipped, 13 in all from 7.0 to 7.9
+  (`4.11.1-16` … `4.11.3-48.el7_9`). `rpm-build` only installs on the exact `rpm` version
+  it was built for
+- all packages are signed by CentOS 7 or EPEL 7 (`rpm -K` checked); the archive's SHA256
+  is pinned in the script
+
+When `rpmrebuild` is needed and not installed, the script uses these tools in this order:
+
+1. It takes the `rpm-build` that matches the server's `rpm` and installs it together with
+   `rpmrebuild` using `rpm -i --nodeps`. Rebuilding installed files needs neither perl,
+   gdb nor `redhat-rpm-config`, which `rpm-build` would otherwise pull in.
+2. It removes both packages again once the backup is done. Packages that were already
+   installed are left alone.
+3. Only if this fails does it try `yum install rpmrebuild`.
+
+The rebuilt packages use SHA256 file digests and an xz payload, like the originals.
 
 The source used for each package is printed during `install` and `uninstall`, and is
 recorded in `sources.txt` inside the backup directory:
@@ -189,6 +213,13 @@ Everything was tested in clean CentOS 7 containers against Remi's `7.0.33-42` pa
 - **Rollback backups:** each source was tested on its own (yum cache only, `rpmrebuild`
   only, repositories) and returned the server to the exact previous version. After a
   rollback from `rpmrebuild` packages, `rpm -V` reports no changes.
+- **Offline server:** the test ran with no yum repositories reachable and without
+  `rpm-build`/`rpmrebuild` installed. The tools were fetched from the release and every
+  package was backed up with `rpmrebuild`. The tools were removed afterwards, and the
+  rollback returned the server to the exact previous version.
+- **Bundled `rpm-build` on every CentOS 7 release:** tested on the official `centos:7.0.1406`
+  … `centos:7.9.2009` images. On each one, the matching `rpm-build` was found and
+  `rpmrebuild` rebuilt installed packages with the same file list and config files.
 - **php-src test suite**, about 3,500 tests: Zend, basic, lang, session and string tests.
   The only differences from the unpatched packages are the expected ones: the
   `session.upload_progress` (`rfc1867*`) tests fail, and one out-of-memory message has

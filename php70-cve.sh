@@ -30,6 +30,15 @@ RELEASE_URL=${PHP70CVE_RELEASE_URL:-https://github.com/bagsiz/el7-php70-security
 SHA256_base=234361a140373e8e71307be8b43406092a3cca8bfae0c84ee91b12e28ec1039e
 SHA256_scl=83183bc2ede37c4db8084c2cc6714835f0399012dda34180e39947373b5deef5
 
+# rpmrebuild + rpm-build for every EL7 rpm version (rpm-build must match the installed rpm
+# exactly; old servers often cannot reach EPEL or the CentOS repositories). Same release.
+TOOLS_ASSET=el7-rpmrebuild-tools.tar.gz
+SHA256_tools=677dbcfbecc420f056fb5870f52c31be63dc778ec65d9cd23aaa1bae4a729447
+TOOLS_DIR=$HERE/tools
+# backup_rpm runs in a subshell ($(...)): state shared with it lives in files
+TOOLS_STATE=$(mktemp)      # names of the tool packages this script installed
+RR_FILTER=$(mktemp)        # rpmrebuild %files filter, see ensure_rpmrebuild
+
 # Network timeouts (seconds). curl gives up when it cannot connect, or when the download
 # stalls (below 1 KB/s), for NET_TIMEOUT seconds; a slow but moving download is not cut off.
 # yum/yumdownloader: per-request timeout, one retry, unreachable repositories are skipped
@@ -272,10 +281,14 @@ backup_rpm() { # NAME VERSION-RELEASE DESTDIR
             yumdownloader "${YUM_NET[@]}" -q --destdir "$dest" "$nevra" >/dev/null 2>&1 && [ -f "$dest/$nevra.rpm" ] && { echo repo; return 0; }
             ;;
         rebuild)
-            command -v rpmrebuild >/dev/null 2>&1 || yum "${YUM_NET[@]}" -y -q install rpmrebuild >/dev/null 2>&1
-            command -v rpmrebuild >/dev/null 2>&1 || continue
+            ensure_rpmrebuild || continue
             tmp=$(mktemp -d)
-            if rpmrebuild --batch --notest-install --directory="$tmp" "$name" >/dev/null 2>&1; then
+            # SHA256 file digests and xz payload like the original packages (normally set by
+            # redhat-rpm-config, which the bundled tools do not pull in); files missing on
+            # disk (docs not installed, deleted by hand) are dropped from %files
+            if rpmrebuild --batch --notest-install \
+                    --define '_binary_filedigest_algorithm 8' --define '_binary_payload w9.xzdio' \
+                    --change-spec-files="$RR_FILTER" --directory="$tmp" "$name" >/dev/null 2>&1; then
                 f=$(find "$tmp" -name "$nevra.rpm" | head -1)
                 [ -n "$f" ] && mv "$f" "$dest/$nevra.rpm" && { rm -rf "$tmp"; echo rebuild; return 0; }
             fi
@@ -285,6 +298,61 @@ backup_rpm() { # NAME VERSION-RELEASE DESTDIR
     done
     return 1
 }
+
+# Make rpmrebuild usable: already installed, else the bundled tools from the release
+# (rpm-build matching this server's rpm + rpmrebuild, installed with --nodeps: rebuilding
+# installed files needs neither perl, gdb nor redhat-rpm-config), else yum (EPEL).
+# Packages installed here are removed again by cleanup_tools.
+ensure_rpmrebuild() {
+    local f r add=()
+    if [ ! -s "$RR_FILTER" ]; then
+        cat > "$RR_FILTER" <<'FILTER'
+#!/bin/bash
+while IFS= read -r line; do
+    p=$(printf '%s\n' "$line" | sed -n 's/.*"\(\/[^"]*\)"[[:space:]]*$/\1/p')
+    if [ -n "$p" ] && [ ! -e "$p" ] && [ ! -L "$p" ]; then continue; fi
+    printf '%s\n' "$line"
+done
+FILTER
+        chmod +x "$RR_FILTER"
+    fi
+    command -v rpmrebuild >/dev/null 2>&1 && command -v rpmbuild >/dev/null 2>&1 && return 0
+
+    if [ ! -f "$TOOLS_DIR/SHA256SUMS" ]; then
+        f=$HERE/$TOOLS_ASSET
+        if [ ! -f "$f" ]; then
+            curl -fsL "${CURL_NET[@]}" -o "$f.part" "$RELEASE_URL/$TOOLS_ASSET" && mv "$f.part" "$f"
+            rm -f "$f.part"
+        fi
+        if [ -f "$f" ] && echo "$SHA256_tools  $f" | sha256sum --quiet -c - >/dev/null 2>&1; then
+            tar xzf "$f" -C "$HERE" 2>/dev/null
+        fi
+    fi
+    if [ -f "$TOOLS_DIR/SHA256SUMS" ] && (cd "$TOOLS_DIR" && sha256sum --quiet -c SHA256SUMS >/dev/null 2>&1); then
+        r=$(rpm -q --qf '%{VERSION}-%{RELEASE}' rpm)
+        if ! rpm -q rpm-build >/dev/null 2>&1; then
+            [ -f "$TOOLS_DIR/rpm-build-$r.x86_64.rpm" ] && add+=("$TOOLS_DIR/rpm-build-$r.x86_64.rpm")
+        fi
+        if ! rpm -q rpmrebuild >/dev/null 2>&1; then
+            for f in "$TOOLS_DIR"/rpmrebuild-*.noarch.rpm; do [ -f "$f" ] && add+=("$f"); done
+        fi
+        if [ ${#add[@]} -gt 0 ] && rpm -i --nodeps "${add[@]}" >/dev/null 2>&1; then
+            for f in "${add[@]}"; do rpm -qp --qf '%{NAME}\n' "$f" 2>/dev/null >> "$TOOLS_STATE"; done
+        fi
+        command -v rpmrebuild >/dev/null 2>&1 && command -v rpmbuild >/dev/null 2>&1 && return 0
+    fi
+    yum "${YUM_NET[@]}" -y -q install rpmrebuild >/dev/null 2>&1
+    command -v rpmrebuild >/dev/null 2>&1 && command -v rpmbuild >/dev/null 2>&1
+}
+
+# remove the rpm-build/rpmrebuild packages installed by ensure_rpmrebuild
+cleanup_tools() {
+    if [ -s "$TOOLS_STATE" ]; then
+        rpm -e --nodeps $(sort -u "$TOOLS_STATE") >/dev/null 2>&1
+        : > "$TOOLS_STATE"
+    fi
+}
+trap 'cleanup_tools; rm -f "$TOOLS_STATE" "$RR_FILTER"' EXIT
 
 active_services() {
     local s
@@ -416,6 +484,7 @@ install_mode() {
             missing+=("$nevra")
         fi
     done
+    cleanup_tools
     echo "  RPMs of the current versions: $(( ${#upgrade[@]} - ${#missing[@]} ))/${#upgrade[@]} backed up"
     if grep -q ' rebuild$' "$backup/sources.txt" 2>/dev/null; then
         warn "some RPMs were rebuilt from the installed files with rpmrebuild (unsigned, not identical to the original)"
