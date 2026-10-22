@@ -18,7 +18,7 @@
 # See README.md and LICENSE: https://github.com/bagsiz/el7-php70-security
 set -uo pipefail
 
-PATCHED_VR=7.0.33-47.1.el7
+PATCHED_VR=7.0.33-47.2.el7
 CVE=CVE-2026-109618
 HERE=$(cd "$(dirname "$0")" && pwd)
 STATE_ROOT=/var/lib/php70-cve-2026
@@ -26,9 +26,9 @@ STATE_ROOT=/var/lib/php70-cve-2026
 # The RPMs are GitHub release assets: when rpms/<base|scl> is missing, the archive is
 # downloaded and checked against the SHA256 below. Without access (no internet), download
 # the archive by hand and put it next to this script.
-RELEASE_URL=${PHP70CVE_RELEASE_URL:-https://github.com/bagsiz/el7-php70-security/releases/download/v7.0.33-47.1}
-SHA256_base=234361a140373e8e71307be8b43406092a3cca8bfae0c84ee91b12e28ec1039e
-SHA256_scl=83183bc2ede37c4db8084c2cc6714835f0399012dda34180e39947373b5deef5
+RELEASE_URL=${PHP70CVE_RELEASE_URL:-https://github.com/bagsiz/el7-php70-security/releases/download/v7.0.33-47.2}
+SHA256_base=292870eba34fa01ab3943c4b1463abd44a78c78cb5bdd4263317477fd3eb09a9
+SHA256_scl=f38abe8eb9b27241093fc1378c84a45b9df5f1d4ce012c74290631cc7bd75dbc
 
 # rpmrebuild + rpm-build for every EL7 rpm version (rpm-build must match the installed rpm
 # exactly; old servers often cannot reach EPEL or the CentOS repositories). Same release.
@@ -105,10 +105,17 @@ fetch_rpms() {
     local f=$HERE/$ASSET
     if [ ! -f "$f" ]; then
         say "Downloading RPMs: $RELEASE_URL/$ASSET"
-        curl -fL "${CURL_NET[@]}" -o "$f.part" "$RELEASE_URL/$ASSET" && mv "$f.part" "$f" || {
+        local rc=0
+        curl -fL "${CURL_NET[@]}" -o "$f.part" "$RELEASE_URL/$ASSET" && mv "$f.part" "$f" || rc=$?
+        if [ "$rc" != 0 ]; then
             rm -f "$f.part"
+            # 35/60: TLS handshake / certificate not trusted. Stock CentOS 7.0-7.3 CA bundles
+            # do not trust the certificates of GitHub's download hosts
+            case $rc in 35|51|58|60|77)
+                warn "TLS/certificate error (curl exit $rc): update the CA bundle with 'yum update ca-certificates', or download the file on another machine" ;;
+            esac
             die "could not download $ASSET. Download it from the release by hand, put it in $HERE/ and run again"
-        }
+        fi
     fi
     echo "$ASSET_SHA  $f" | sha256sum --quiet -c - || die "$ASSET SHA256 mismatch (corrupted or modified); delete it and download again"
     tar xzf "$f" -C "$HERE" || die "could not extract $ASSET"

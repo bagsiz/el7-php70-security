@@ -21,10 +21,15 @@ chmod +x php70-cve.sh
 ./php70-cve.sh uninstall   # roll back to the previous versions
 ```
 
-The RPMs are published as [release assets](https://github.com/bagsiz/el7-php70-security/releases/tag/v7.0.33-47.1).
+The RPMs are published as [release assets](https://github.com/bagsiz/el7-php70-security/releases/tag/v7.0.33-47.2).
 `install` downloads the archive it needs and checks it against a SHA256 that is hardcoded
 in the script. If the server has no internet access, download the archive by hand and put
 it next to the script.
+
+> **Old CentOS 7 (7.0–7.3) with the original CA bundle:** the stock `ca-certificates` of
+> those releases does not trust the certificates of `raw.githubusercontent.com` and GitHub's
+> release download host, so `curl` fails with a TLS/certificate error. Run
+> `yum update ca-certificates`, or download the files on another machine and copy them over.
 
 ### Network timeouts
 
@@ -42,7 +47,7 @@ Environment variables:
 | Variable | Default | Purpose |
 |---|---|---|
 | `PHP70CVE_NET_TIMEOUT` | `10` | Network timeout in seconds, e.g. `PHP70CVE_NET_TIMEOUT=30 ./php70-cve.sh install` on a slow link |
-| `PHP70CVE_RELEASE_URL` | this repo's `v7.0.33-47.1` release | Download the archives from a mirror or an internal server instead |
+| `PHP70CVE_RELEASE_URL` | this repo's `v7.0.33-47.2` release | Download the archives from a mirror or an internal server instead |
 
 ## What it detects
 
@@ -159,7 +164,13 @@ recorded in `sources.txt` inside the backup directory:
 WARNING: some RPMs were rebuilt from the installed files with rpmrebuild (unsigned, not identical to the original)
 ```
 
-## Package contents (`7.0.33-47.1.el7`)
+## Package contents (`7.0.33-47.2.el7`)
+
+> `47.2` replaces `47.1`. The `47.1` packages were built on CentOS 7.9 and did not install on
+> CentOS 7.0–7.3 (openssl 1.0.1e): `Requires: libcrypto.so.10(OPENSSL_1.0.2)(64bit)`. `47.2`
+> adds `php-7.0-el7-openssl101-compat.patch` (see below). Servers on `47.1` are upgraded to
+> `47.2` by `install`.
+
 
 - **base** (`php70-rpms-base.tar.gz`, `php-*`): built from Remi's `php-7.0.33-42` SRPM,
   which is what `remi-php70` servers run. On top of it are the security fixes Remi later
@@ -175,6 +186,36 @@ WARNING: some RPMs were rebuilt from the installed files with rpmrebuild (unsign
   version strings differ. This includes the ZTS build and `libphp7-zts.so`.
 - **scl** (`php70-rpms-scl.tar.gz`, `php70-php-*`): Remi's `php70-php-7.0.33-47` SRPM plus
   the CVE-2026-109618/109619 backport.
+
+### Runs on every CentOS 7 release (7.0–7.9)
+
+The packages are built on CentOS 7.9, which has openssl 1.0.2k. Linked against it, PHP used
+five functions that CentOS 7.0–7.3 (openssl 1.0.1e) do not have:
+
+- `SSLeay_version` in its `OPENSSL_1.0.2` symbol version
+- `X509_get_signature_nid`
+- `SSL_CTX_set_alpn_protos`, `SSL_CTX_set_alpn_select_cb` and `SSL_get0_alpn_selected` (ALPN)
+
+`php-7.0-el7-openssl101-compat.patch` (in `ext/openssl/openssl.c` and `xp_ssl.c`) no longer
+links these functions. It looks them up at run time with `dlsym()` in the already loaded
+`libssl`/`libcrypto`:
+
+- **CentOS 7.4–7.9 (openssl 1.0.2k):** everything works as before, including ALPN.
+  `phpinfo()` shows the real library version.
+- **CentOS 7.0–7.3 (openssl 1.0.1e):** PHP behaves as when built against openssl 1.0.1.
+  The `alpn_protocols` stream context option gives a warning and is ignored, and the
+  certificate signature type comes from `OBJ_obj2nid()`.
+
+Weak symbols are not enough here: glibc 2.17 still fails to load versioned weak references.
+After the patch, every `libssl`/`libcrypto` symbol the packages use (337) exists in CentOS
+7.0's openssl. This was checked on the built binaries.
+
+**Known limitation, `php-gd` on CentOS 7.0–7.5:** `php-gd` uses Remi's `gd3php`, which
+pulls `libraqm` from EPEL, which needs fribidi ≥ 1.0. fribidi 1.0 arrived in CentOS 7.6.
+Remi's own last EL7 build (`7.0.33-42`) has the same dependency. On older releases
+`gd.so` fails to load ("undefined symbol: fribidi_get_bracket_types"). The installer's
+verification sees the load warning and rolls the upgrade back. Updating `fribidi` (from
+CentOS 7.6+ repositories) fixes it.
 
 ## Behaviour changes
 
@@ -217,6 +258,12 @@ Everything was tested in clean CentOS 7 containers against Remi's `7.0.33-42` pa
   `rpm-build`/`rpmrebuild` installed. The tools were fetched from the release and every
   package was backed up with `rpmrebuild`. The tools were removed afterwards, and the
   rollback returned the server to the exact previous version.
+- **Old CentOS 7 (openssl 1.0.1e):** tested on `centos:7.3.1611` for base and SCL. The
+  patched packages install through the installer, and the following work: PHP, php-fpm
+  serving requests, the openssl extension (`openssl_digest`, `openssl_x509_parse` with
+  `signatureTypeSN`) and the `alpn_protocols` option (warning, no crash). mysqlnd, pdo,
+  xml, mbstring, intl, opcache, soap, process, bcmath, ldap and pgsql load without
+  warnings; gd is the exception, see the known limitation above.
 - **Bundled `rpm-build` on every CentOS 7 release:** tested on the official `centos:7.0.1406`
   … `centos:7.9.2009` images. On each one, the matching `rpm-build` was found and
   `rpmrebuild` rebuilt installed packages with the same file list and config files.
