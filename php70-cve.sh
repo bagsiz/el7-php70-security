@@ -30,6 +30,15 @@ RELEASE_URL=${PHP70CVE_RELEASE_URL:-https://github.com/bagsiz/el7-php70-security
 SHA256_base=234361a140373e8e71307be8b43406092a3cca8bfae0c84ee91b12e28ec1039e
 SHA256_scl=83183bc2ede37c4db8084c2cc6714835f0399012dda34180e39947373b5deef5
 
+# Network timeouts (seconds). curl gives up when it cannot connect, or when the download
+# stalls (below 1 KB/s), for NET_TIMEOUT seconds; a slow but moving download is not cut off.
+# yum/yumdownloader: per-request timeout, one retry, unreachable repositories are skipped
+# (EOL CentOS 7 servers often still list dead mirrors such as mirrorlist.centos.org).
+NET_TIMEOUT=${PHP70CVE_NET_TIMEOUT:-10}
+CURL_NET=(--connect-timeout "$NET_TIMEOUT" --speed-time "$NET_TIMEOUT" --speed-limit 1024)
+# yum: retries=0 would mean "retry forever", 1 is the minimum
+YUM_NET=(--setopt=timeout="$NET_TIMEOUT" --setopt=retries=1 --setopt='*.skip_if_unavailable=1')
+
 # packages that have a patched build
 PKGS_base="php php-bcmath php-cli php-common php-dba php-dbg php-devel php-embedded php-enchant php-fpm php-gd php-gmp php-imap php-interbase php-intl php-json php-ldap php-litespeed php-mbstring php-mcrypt php-mysqlnd php-odbc php-opcache php-pdo php-pdo-dblib php-pgsql php-process php-pspell php-recode php-snmp php-soap php-tidy php-xml php-xmlrpc"
 PKGS_scl="php70-php php70-php-bcmath php70-php-cli php70-php-common php70-php-dba php70-php-dbg php70-php-devel php70-php-embedded php70-php-enchant php70-php-fpm php70-php-gd php70-php-gmp php70-php-imap php70-php-interbase php70-php-intl php70-php-json php70-php-ldap php70-php-litespeed php70-php-mbstring php70-php-mcrypt php70-php-mysqlnd php70-php-odbc php70-php-opcache php70-php-pdo php70-php-pdo-dblib php70-php-pgsql php70-php-process php70-php-pspell php70-php-recode php70-php-snmp php70-php-soap php70-php-tidy php70-php-xml php70-php-xmlrpc"
@@ -87,7 +96,7 @@ fetch_rpms() {
     local f=$HERE/$ASSET
     if [ ! -f "$f" ]; then
         say "Downloading RPMs: $RELEASE_URL/$ASSET"
-        curl -fL --retry 3 --connect-timeout 20 -o "$f.part" "$RELEASE_URL/$ASSET" && mv "$f.part" "$f" || {
+        curl -fL "${CURL_NET[@]}" -o "$f.part" "$RELEASE_URL/$ASSET" && mv "$f.part" "$f" || {
             rm -f "$f.part"
             die "could not download $ASSET. Download it from the release by hand, put it in $HERE/ and run again"
         }
@@ -259,11 +268,11 @@ backup_rpm() { # NAME VERSION-RELEASE DESTDIR
             done < <(find /var/cache/yum -name "$nevra.rpm" 2>/dev/null)
             ;;
         repo)
-            command -v yumdownloader >/dev/null 2>&1 || yum -y -q install yum-utils >/dev/null 2>&1
-            yumdownloader -q --destdir "$dest" "$nevra" >/dev/null 2>&1 && [ -f "$dest/$nevra.rpm" ] && { echo repo; return 0; }
+            command -v yumdownloader >/dev/null 2>&1 || yum "${YUM_NET[@]}" -y -q install yum-utils >/dev/null 2>&1
+            yumdownloader "${YUM_NET[@]}" -q --destdir "$dest" "$nevra" >/dev/null 2>&1 && [ -f "$dest/$nevra.rpm" ] && { echo repo; return 0; }
             ;;
         rebuild)
-            command -v rpmrebuild >/dev/null 2>&1 || yum -y -q install rpmrebuild >/dev/null 2>&1
+            command -v rpmrebuild >/dev/null 2>&1 || yum "${YUM_NET[@]}" -y -q install rpmrebuild >/dev/null 2>&1
             command -v rpmrebuild >/dev/null 2>&1 || continue
             tmp=$(mktemp -d)
             if rpmrebuild --batch --notest-install --directory="$tmp" "$name" >/dev/null 2>&1; then
@@ -420,7 +429,7 @@ install_mode() {
     ln -sfn "$backup" "$STATE_DIR/current"
 
     say "Installing the patched packages ($TITLE)"
-    if ! yum -y localinstall "${files[@]}"; then
+    if ! yum "${YUM_NET[@]}" -y localinstall "${files[@]}"; then
         die "yum install failed; nothing was changed (the yum transaction was rolled back). Backup: $backup"
     fi
 
@@ -476,7 +485,7 @@ uninstall_mode() {
         rpm -Uvh --oldpackage "${local_rpms[@]}" || die "rpm downgrade failed"
     fi
     if [ ${#repo_pkgs[@]} -gt 0 ]; then
-        yum -y downgrade "${repo_pkgs[@]}" || die "yum downgrade failed"
+        yum "${YUM_NET[@]}" -y downgrade "${repo_pkgs[@]}" || die "yum downgrade failed"
     fi
 
     local services
